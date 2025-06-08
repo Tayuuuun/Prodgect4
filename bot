@@ -1,0 +1,226 @@
+import asyncio
+import logging
+import aiohttp
+import random
+import sqlite3
+from aiogram import Bot, Dispatcher, types, F
+from aiogram.fsm.storage.memory import MemoryStorage
+from aiogram.types import InlineKeyboardMarkup, InlineKeyboardButton, ReplyKeyboardMarkup, KeyboardButton
+from aiogram.filters import Command
+from aiogram.fsm.context import FSMContext
+from aiogram.fsm.state import State, StatesGroup
+
+# Настройка логирования
+logging.basicConfig(
+    level=logging.INFO,
+    format="%(asctime)s - %(name)s - %(levelname)s - %(message)s"
+)
+logger = logging.getLogger(__name__)
+
+BOT_TOKEN = "8001915500:AAHdXl_wttVRdLWxC9W2N85SZKBDbEW_O0U"
+
+
+# Инициализация базы данных
+def init_db():
+    conn = sqlite3.connect('favorites.db')
+    cursor = conn.cursor()
+    cursor.execute('''
+        CREATE TABLE IF NOT EXISTS favorites (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            user_id INTEGER NOT NULL,
+            character_id INTEGER NOT NULL,
+            character_name TEXT NOT NULL,
+            character_image TEXT NOT NULL,
+            comment TEXT,
+            timestamp DATETIME DEFAULT CURRENT_TIMESTAMP
+        )
+    ''')
+    conn.commit()
+    conn.close()
+
+
+def add_favorite(user_id, character_id, character_name, character_image, comment):
+    conn = sqlite3.connect('favorites.db')
+    cursor = conn.cursor()
+    cursor.execute('''
+        INSERT INTO favorites (user_id, character_id, character_name, character_image, comment)
+        VALUES (?, ?, ?, ?, ?)
+    ''', (user_id, character_id, character_name, character_image, comment))
+    conn.commit()
+    conn.close()
+
+
+def get_favorites(user_id):
+    conn = sqlite3.connect('favorites.db')
+    cursor = conn.cursor()
+    cursor.execute('''
+        SELECT character_name, character_image, comment 
+        FROM favorites 
+        WHERE user_id = ?
+        ORDER BY timestamp DESC
+    ''', (user_id,))
+    favorites = cursor.fetchall()
+    conn.close()
+    return favorites
+
+
+class FSMComment(StatesGroup):
+    wait_comment = State()
+    character_data = State()
+
+
+# Инициализация бота
+bot = Bot(token=BOT_TOKEN)
+storage = MemoryStorage()
+dp = Dispatcher(storage=storage)
+
+# Инициализация базы данных при старте
+init_db()
+
+# Клавиатура
+main_kb = ReplyKeyboardMarkup(
+    keyboard=[
+        [KeyboardButton(text="🎲 Рандомный персонаж")],
+        [KeyboardButton(text="⭐️ Избранное")]
+    ],
+    resize_keyboard=True
+)
+
+
+async def get_random_character():
+    try:
+        character_id = random.randint(1, 826)
+        url = f"https://rickandmortyapi.com/api/character/{character_id}"
+
+        async with aiohttp.ClientSession(timeout=aiohttp.ClientTimeout(total=10)) as session:
+            async with session.get(url) as response:
+                if response.status == 200:
+                    return await response.json()
+                return None
+    except Exception as e:
+        logger.error(f"Error fetching character: {e}")
+        return None
+
+
+# Команды /start и /help
+@dp.message(Command("start"))
+async def start(message: types.Message):
+    await message.answer(
+        "Привет! Я бот с персонажами из 'Рик и Морти'.",
+        reply_markup=main_kb
+    )
+    logger.info(f"User {message.from_user.id} started the bot")
+
+
+@dp.message(Command("help"))
+async def help_command(message: types.Message):
+    await message.answer(
+        "Доступные команды:\n"
+        "/start - начать работу\n"
+        "/help - помощь\n"
+        "🎲 Рандомный персонаж - получить случайного персонажа\n"
+        "⭐️ Избранное - ваши сохраненные персонажи"
+
+    )
+# Рандомный персонаж
+@dp.message(F.text == "🎲 Рандомный персонаж")
+async def random_character_handler(message: types.Message):
+    character = await get_random_character()
+    if character:
+        response = (
+            f"👤 Имя: {character['name']}\n"
+            f"💀 Статус: {character['status']}\n"
+            f"🧬 Вид: {character['species']}\n"
+            f"🚻 Пол: {character['gender']}\n"
+            f"🌍 Происхождение: {character['origin']['name']}\n"
+            f"📍 Локация: {character['location']['name']}"
+        )
+
+        markup = InlineKeyboardMarkup(
+            inline_keyboard=[
+                [InlineKeyboardButton(
+                    text="💾 Сохранить персонажа",
+                    callback_data=f"save_{character['id']}"
+                )]
+            ]
+        )
+
+        await message.answer_photo(
+            photo=character['image'],
+            caption=response,
+            reply_markup=markup
+        )
+    else:
+        await message.answer("Не удалось получить персонажа, попробуйте позже")
+
+
+# Обработка inline-кнопки
+@dp.callback_query(F.data.startswith("save_"))
+async def save_character(callback: types.CallbackQuery, state: FSMContext):
+    character_id = callback.data.split("_")[1]
+
+    # Получаем данные о персонаже из сообщения
+    character_name = callback.message.caption.split('\n')[0].replace("👤 Имя: ", "")
+    character_image = callback.message.photo[-1].file_id
+
+    # Сохраняем данные персонажа в состоянии
+    await state.update_data(
+        character_id=character_id,
+        character_name=character_name,
+        character_image=character_image
+    )
+
+    await callback.message.answer("Напишите комментарий к персонажу:")
+    await state.set_state(FSMComment.wait_comment)
+    await callback.answer()
+
+
+# Сохранение комментария
+@dp.message(FSMComment.wait_comment)
+async def save_comment(message: types.Message, state: FSMContext):
+    data = await state.get_data()
+
+    # Сохраняем персонажа в базу данных
+    add_favorite(
+        user_id=message.from_user.id,
+        character_id=data['character_id'],
+        character_name=data['character_name'],
+        character_image=data['character_image'],
+        comment=message.text
+    )
+
+    await message.answer("✅ Персонаж сохранен в избранное!")
+    await state.clear()
+
+
+# Показ избранного
+@dp.message(F.text == "⭐️ Избранное")
+async def show_favorites(message: types.Message):
+    favorites = get_favorites(message.from_user.id)
+
+    if not favorites:
+        await message.answer("У вас пока нет сохраненных персонажей.")
+        return
+
+    for fav in favorites:
+        name, image, comment = fav
+        caption = f"👤 {name}\n💬 Ваш комментарий: {comment if comment else 'нет комментария'}"
+
+        await message.answer_photo(
+            photo=image,
+            caption=caption
+        )
+
+
+async def main():
+    logger.info("Starting bot...")
+    try:
+        await dp.start_polling(bot)
+    except Exception as e:
+        logger.error(f"Bot stopped with error: {e}")
+    finally:
+        await bot.session.close()
+
+
+if __name__ == "__main__":
+    asyncio.run(main())
