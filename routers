@@ -1,0 +1,84 @@
+from aiogram import Router, F
+from aiogram.fsm.context import FSMContext
+from aiogram.types import Message, CallbackQuery
+from aiogram.filters import Command
+
+from storage.database import add_favorite, get_favorites
+from keyboards import get_main_keyboard, get_save_button
+from states import FSMComment
+
+router = Router()
+
+@router.message(Command("start"))
+async def start(message: Message):
+    await message.answer(
+        "Привет! Я бот с персонажами из 'Рик и Морти'.",
+        reply_markup=get_main_keyboard()
+    )
+
+@router.message(Command("help"))
+async def help_command(message: Message):
+    await message.answer(
+        "Доступные команды:\n"
+        "/start - начать работу\n"
+        "/help - помощь\n"
+        "🎲 Рандомный персонаж - получить случайного персонажа\n"
+        "⭐️ Избранное - ваши сохраненные персонажи"
+    )
+
+@router.message(F.text == "🎲 Рандомный персонаж")
+async def random_character_handler(message: Message, character: dict):
+    response = (
+        f"👤 Имя: {character['name']}\n"
+        f"💀 Статус: {character['status']}\n"
+        f"🧬 Вид: {character['species']}\n"
+        f"🚻 Пол: {character['gender']}\n"
+        f"🌍 Происхождение: {character['origin']['name']}\n"
+        f"📍 Локация: {character['location']['name']}"
+    )
+    
+    await message.answer_photo(
+        photo=character['image'],
+        caption=response,
+        reply_markup=get_save_button(character['id'])
+    )
+
+@router.callback_query(F.data.startswith("save_"))
+async def save_character(callback: CallbackQuery, state: FSMContext):
+    character_id = callback.data.split("_")[1]
+    character_name = callback.message.caption.split('\n')[0].replace("👤 Имя: ", "")
+    character_image = callback.message.photo[-1].file_id
+    
+    await state.update_data(
+        character_id=character_id,
+        character_name=character_name,
+        character_image=character_image
+    )
+    
+    await callback.message.answer("Напишите комментарий к персонажу:")
+    await state.set_state(FSMComment.wait_comment)
+
+@router.message(FSMComment.wait_comment)
+async def save_comment(message: Message, state: FSMContext):
+    data = await state.get_data()
+    add_favorite(
+        user_id=message.from_user.id,
+        character_id=data['character_id'],
+        character_name=data['character_name'],
+        character_image=data['character_image'],
+        comment=message.text
+    )
+    await message.answer("✅ Персонаж сохранен в избранное!")
+    await state.clear()
+
+@router.message(F.text == "⭐️ Избранное")
+async def show_favorites(message: Message):
+    favorites = get_favorites(message.from_user.id)
+    if not favorites:
+        await message.answer("У вас пока нет сохраненных персонажей.")
+        return
+    
+    for fav in favorites:
+        name, image, comment = fav
+        caption = f"👤 {name}\n💬 Ваш комментарий: {comment if comment else 'нет комментария'}"
+        await message.answer_photo(photo=image, caption=caption)
