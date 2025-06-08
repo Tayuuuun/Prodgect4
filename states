@@ -1,0 +1,5 @@
+from aiogram.fsm.state import State, StatesGroup
+
+class FSMComment(StatesGroup):
+    wait_comment = State()
+    character_data = State()
