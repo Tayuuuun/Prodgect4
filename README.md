@@ -21,7 +21,7 @@
 - Python 3.11+
 - Aiogram 3.x (асинхронная библиотека для Telegram Bot API)
 - SQLite (хранение данных пользователей)
-- API ([)](https://rickandmortyapi.com/api/character/{character_id})
+- API (https://rickandmortyapi.com/api/character/{character_id})
 
 Пример использования:
 
