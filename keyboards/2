@@ -1,0 +1,23 @@
+from aiogram import Bot, Dispatcher, types, F
+from aiogram.fsm.context import FSMContext
+from aiogram.fsm.state import State, StatesGroup
+
+# Обработка inline-кнопки
+@dp.callback_query(F.data.startswith("save_"))
+async def save_character(callback: types.CallbackQuery, state: FSMContext):
+    character_id = callback.data.split("_")[1]
+
+
+    character_name = callback.message.caption.split('\n')[0].replace("👤 Имя: ", "")
+    character_image = callback.message.photo[-1].file_id
+
+  
+    await state.update_data(
+        character_id=character_id,
+        character_name=character_name,
+        character_image=character_image
+    )
+
+    await callback.message.answer("Напишите комментарий к персонажу:")
+    await state.set_state(FSMComment.wait_comment)
+    await callback.answer()
